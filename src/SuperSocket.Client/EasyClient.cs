@@ -192,17 +192,17 @@ namespace SuperSocket.Client
 
             while (await enumerator.MoveNextAsync())
             {
-                OnPackageReceived(enumerator.Current);
+                await OnPackageReceived(enumerator.Current);
             }
         }
 
-        private void OnPackageReceived(TReceivePackage package)
+        protected virtual async ValueTask OnPackageReceived(TReceivePackage package)
         {
             var handler = PackageHandler;
 
             try
             {
-                handler.Invoke(this, package);
+                await handler.Invoke(this, package);
             }
             catch (Exception e)
             {
@@ -232,6 +232,11 @@ namespace SuperSocket.Client
         protected virtual void OnError(string message, Exception exception)
         {
             Logger?.LogError(exception, message);
+        }
+
+        protected virtual void OnError(string message)
+        {
+            Logger?.LogError(message);
         }
 
         ValueTask IEasyClient<TReceivePackage>.SendAsync(ReadOnlyMemory<byte> data)

@@ -16,6 +16,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Hosting.Internal;
 using System.Linq;
+using System.Collections.Generic;
+using System.Security.Authentication;
 
 namespace SuperSocket.Tests
 {
@@ -29,7 +31,6 @@ namespace SuperSocket.Tests
         }
 
         [Fact]
-        [Trait("Category", "TestSessionCount")]
         public async Task TestSessionCount() 
         {
             using (var server = CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>()
@@ -64,11 +65,82 @@ namespace SuperSocket.Tests
                 OutputHelper.WriteLine("SessionCount:" + server.SessionCount);
 
                 await server.StopAsync();
+            }
+        }
+
+        [Theory]
+        [InlineData("Tls11", SslProtocols.Tls11, false)]
+        [InlineData("Tls12", SslProtocols.Tls12, false)]
+        [InlineData("Tls15", SslProtocols.None, true)]
+        [InlineData("Tls11, Tls12", SslProtocols.Tls11 | SslProtocols.Tls12, false)]
+        [InlineData("Tls11,Tls12", SslProtocols.Tls11 | SslProtocols.Tls12, false)]
+        [InlineData("Tls11|Tls12", SslProtocols.Tls11 | SslProtocols.Tls12, true)]        
+        public async Task TestSecurityOptions(string security, SslProtocols protocols, bool expectException) 
+        {
+            var hostConfigurator = new SecureHostConfigurator();
+            var listener = default(ListenOptions);
+
+            var createServer = new Func<IServer>(() =>
+            {
+                return CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>(hostConfigurator)
+                    .ConfigureAppConfiguration((HostBuilder, configBuilder) =>
+                    {
+                        configBuilder.AddInMemoryCollection(new Dictionary<string, string>
+                        {
+                            { "serverOptions:listeners:0:security", security }
+                        });
+                    })
+                    .ConfigureSuperSocket(serverOptions =>
+                    {
+                        listener = serverOptions.Listeners.FirstOrDefault();
+                    })
+                    .BuildAsServer();
+            });
+
+            IServer server = null;
+
+            if (!expectException)
+                server = createServer();
+            else
+            {
+                var exce = Assert.ThrowsAny<Exception>(() => 
+                {
+                    server = createServer();
+                });
+
+                return;
+            }
+            
+            Assert.NotNull(listener);
+            Assert.Equal(protocols, listener.Security);
+
+            using (server)
+            {
+                Assert.Equal("TestServer", server.Name);
+
+                Assert.True(await server.StartAsync());
+                OutputHelper.WriteLine("Started.");
+
+                Assert.Equal(0, server.SessionCount);
+                OutputHelper.WriteLine("SessionCount:" + server.SessionCount);
+
+                using (var socket = CreateClient(hostConfigurator))
+                {
+                    var socketStream = await hostConfigurator.GetClientStream(socket);
+                    await Task.Delay(500);
+                    Assert.Equal(1, server.SessionCount);
+                    OutputHelper.WriteLine("SessionCount:" + server.SessionCount);              
+                }
+
+                await Task.Delay(500);
+                Assert.Equal(0, server.SessionCount);
+                OutputHelper.WriteLine("SessionCount:" + server.SessionCount);
+
+                await server.StopAsync();
             }            
         }
 
         [Fact]
-        [Trait("Category", "TestSessionHandlers")]
         public async Task TestSessionHandlers() 
         {
             var connected = false;
@@ -109,7 +181,50 @@ namespace SuperSocket.Tests
         }
 
         [Fact]
-        [Trait("Category", "TestConfigureSocketOptions")]
+        public async Task TestUseHostedService() 
+        {
+            var connected = false;
+
+            using (var server = CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>()
+                .UseSessionHandler((s) =>
+                {
+                    connected = true;
+                    return new ValueTask();
+                }, (s) =>
+                {
+                    connected = false;
+                    return new ValueTask();
+                })
+                .UseHostedService<SuperSocketServiceA>()
+                .BuildAsServer())
+            {
+                Assert.Equal("TestServer", server.Name);
+
+                Assert.True(await server.StartAsync());
+                OutputHelper.WriteLine("Started.");
+
+                var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                await client.ConnectAsync(GetDefaultServerEndPoint());
+                OutputHelper.WriteLine("Connected.");
+
+                await Task.Delay(1000);
+
+                Assert.True(connected);
+
+                Assert.IsType<SuperSocketServiceA>(server);
+
+                client.Shutdown(SocketShutdown.Both);
+                client.Close();
+
+                await Task.Delay(1000);
+
+                Assert.False(connected);
+
+                await server.StopAsync();
+            }            
+        }
+
+        [Fact]
         public async Task TestConfigureSocketOptions() 
         {
             var connected = false;
@@ -163,7 +278,6 @@ namespace SuperSocket.Tests
         }
 
         [Theory]
-        [Trait("Category", "TestConsoleProtocol")]
         [InlineData(typeof(RegularHostConfigurator))]
         [InlineData(typeof(SecureHostConfigurator))]
         public async Task TestConsoleProtocol(Type hostConfiguratorType)
@@ -213,7 +327,6 @@ namespace SuperSocket.Tests
         }
 
         [Fact]
-        [Trait("Category", "TestStartWithDefaultConfig")]
         public async Task TestStartWithDefaultConfig() 
         {
             var server = default(IServer);
@@ -292,7 +405,6 @@ namespace SuperSocket.Tests
         }
 
         [Fact]
-        [Trait("Category", "TestMultipleServerHost")]
         public async Task TestMultipleServerHost()
         {
             var serverName1 = "TestServer1";
