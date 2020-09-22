@@ -19,6 +19,11 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Security.Authentication;
 
+/// <summary>
+/// Run selected test case by command
+/// dotnet test --filter 'FullyQualifiedName=SuperSocket.Tests.SessionTest.TestCloseReason'
+/// </summary>
+
 namespace SuperSocket.Tests
 {
     [Trait("Category", "Basic")]
@@ -150,7 +155,7 @@ namespace SuperSocket.Tests
                 {
                     connected = true;
                     return new ValueTask();
-                }, (s) =>
+                }, (s, e) =>
                 {
                     connected = false;
                     return new ValueTask();
@@ -190,7 +195,7 @@ namespace SuperSocket.Tests
                 {
                     connected = true;
                     return new ValueTask();
-                }, (s) =>
+                }, (s, e) =>
                 {
                     connected = false;
                     return new ValueTask();
@@ -235,7 +240,7 @@ namespace SuperSocket.Tests
                 {
                     connected = true;
                     await Task.CompletedTask;
-                }, async (s) =>
+                }, async (s, e) =>
                 {
                     connected = false;                    
                     await Task.CompletedTask;
