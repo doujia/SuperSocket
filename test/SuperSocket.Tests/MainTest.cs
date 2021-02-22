@@ -73,6 +73,26 @@ namespace SuperSocket.Tests
             }
         }
 
+        [Fact]
+        public void TestCustomConfigOptions() 
+        {
+            var hostConfigurator = new RegularHostConfigurator();
+            var propName = "testPropName";
+            var propValue = "testPropValue";
+
+            using (var server = CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>(hostConfigurator)
+                .ConfigureAppConfiguration((HostBuilder, configBuilder) =>
+                    {
+                        configBuilder.AddInMemoryCollection(new Dictionary<string, string>
+                        {
+                            { $"serverOptions:values:{propName}", propValue }
+                        });
+                    }).BuildAsServer())
+            {
+                Assert.Equal(propValue, server.Options.Values[propName]);
+            }
+        }
+
         [Theory]
         [InlineData("Tls11", SslProtocols.Tls11, false)]
         [InlineData("Tls12", SslProtocols.Tls12, false)]
@@ -145,12 +165,15 @@ namespace SuperSocket.Tests
             }            
         }
 
-        [Fact]
-        public async Task TestSessionHandlers() 
+        [Theory]
+        [InlineData(typeof(RegularHostConfigurator))]
+        [InlineData(typeof(UdpHostConfigurator))]
+        public async Task TestSessionHandlers(Type hostConfiguratorType) 
         {
             var connected = false;
+            var hostConfigurator = CreateObject<IHostConfigurator>(hostConfiguratorType);
 
-            using (var server = CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>()
+            using (var server = CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>(hostConfigurator)
                 .UseSessionHandler((s) =>
                 {
                     connected = true;
@@ -159,6 +182,11 @@ namespace SuperSocket.Tests
                 {
                     connected = false;
                     return new ValueTask();
+                })
+                .UsePackageHandler(async (s, p) =>
+                {
+                    if (p.Text == "CLOSE")
+                        await s.CloseAsync(Channel.CloseReason.LocalClosing);            
                 }).BuildAsServer())
             {
                 Assert.Equal("TestServer", server.Name);
@@ -166,23 +194,46 @@ namespace SuperSocket.Tests
                 Assert.True(await server.StartAsync());
                 OutputHelper.WriteLine("Started.");
 
-                var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                await client.ConnectAsync(GetDefaultServerEndPoint());
+                var client = hostConfigurator.CreateClient();
+                var outputStream = default(Stream);
+
+                if (hostConfigurator is UdpHostConfigurator)
+                {                    
+                    var buffer = Encoding.ASCII.GetBytes("HELLO\r\n");
+                    outputStream = await hostConfigurator.GetClientStream(client);
+                    outputStream.Write(buffer, 0, buffer.Length);
+                    outputStream.Flush();
+                }
+
                 OutputHelper.WriteLine("Connected.");
 
                 await Task.Delay(1000);
 
                 Assert.True(connected);
 
-                client.Shutdown(SocketShutdown.Both);
-                client.Close();
+                if (outputStream != null)
+                {                    
+                    var buffer = Encoding.ASCII.GetBytes("CLOSE\r\n");
+                    outputStream.Write(buffer, 0, buffer.Length);
+                    outputStream.Flush();
+                }
+                else
+                {
+                    client.Shutdown(SocketShutdown.Both);
+                    client.Close();
+                }                
 
                 await Task.Delay(1000);
+
+                if (outputStream != null)
+                {
+                    client.Close();
+                }
 
                 Assert.False(connected);
 
                 await server.StopAsync();
-            }            
+            }
         }
 
         [Fact]
@@ -310,6 +361,74 @@ namespace SuperSocket.Tests
                 }
 
                 await server.StopAsync();
+            }
+        }
+
+        [Theory]
+        [InlineData(typeof(RegularHostConfigurator))]
+        [InlineData(typeof(SecureHostConfigurator))]
+        public async Task TestCloseAfterSend(Type hostConfiguratorType)
+        {
+            var hostConfigurator = CreateObject<IHostConfigurator>(hostConfiguratorType);
+            using (var server = CreateSocketServerBuilder<TextPackageInfo, LinePipelineFilter>(hostConfigurator)
+                .UsePackageHandler(async (IAppSession s, TextPackageInfo p) =>
+                {
+                    await s.SendAsync(Utf8Encoding.GetBytes("Hello World\r\n"));
+                    await s.CloseAsync(Channel.CloseReason.LocalClosing);
+                }).BuildAsServer() as IServer)
+            {            
+                Assert.True(await server.StartAsync());
+                Assert.Equal(0, server.SessionCount);
+
+                var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                await client.ConnectAsync(hostConfigurator.GetServerEndPoint());                
+                using (var stream = await hostConfigurator.GetClientStream(client))
+                using (var streamReader = new StreamReader(stream, Utf8Encoding, true))
+                using (var streamWriter = new StreamWriter(stream, Utf8Encoding, 1024 * 1024 * 4))
+                {
+                    await streamWriter.WriteAsync("Hello World\r\n");
+                    await streamWriter.FlushAsync();
+                    var line = await streamReader.ReadLineAsync();
+                    Assert.Equal("Hello World", line);
+                }
+
+                await server.StopAsync();
+            }
+        }
+
+        [Theory]
+        [InlineData(typeof(RegularHostConfigurator))]
+        [InlineData(typeof(SecureHostConfigurator))]
+        [InlineData(typeof(UdpHostConfigurator))]
+        public async Task TestMultipleHostStartup(Type hostConfiguratorType)
+        {
+            var hostConfigurator = CreateObject<IHostConfigurator>(hostConfiguratorType);
+
+            var hostBuilder = MultipleServerHostBuilder.Create()
+                .ConfigureAppConfiguration((hostingContext, config) =>
+                {
+                    config.Sources.Clear();
+                    config.AddJsonFile("Config/multiple_server.json", optional: false, reloadOnChange: true);
+                })
+                .AddServer<TextPackageInfo, LinePipelineFilter>(builder =>
+                {
+                    hostConfigurator.Configure(builder);
+
+                    builder
+                        .ConfigureServerOptions((ctx, config) =>
+                        {
+                            return config.GetSection("TestServer1");
+                        })
+                        .UsePackageHandler(async (IAppSession s, TextPackageInfo p) =>
+                        {
+                            await s.SendAsync(Utf8Encoding.GetBytes("Hello World\r\n"));
+                        });
+                });
+
+            using(var host = hostBuilder.Build())
+            {
+                await host.StartAsync();
+                await host.StopAsync();
             }
         }
 

@@ -85,7 +85,7 @@ namespace SuperSocket.Tests
             pool.Return(buffer);
         }
 
-        private void WriteMultiplePackages(Stream stream, string[] lines)
+        private void WriteMultiplePackages(IHostConfigurator hostConfigurator, Stream stream, string[] lines)
         {
             var pool = ArrayPool<byte>.Shared;
             var buffer = pool.Rent(lines.Sum(x => 3 + Utf8Encoding.GetMaxByteCount(x.Length)));
@@ -113,6 +113,7 @@ namespace SuperSocket.Tests
 
                 stream.Write(span.Slice(0, size));
                 stream.Flush();
+                hostConfigurator.KeepSequence().GetAwaiter().GetResult();
 
                 span = span.Slice(size);
             }
@@ -144,8 +145,8 @@ namespace SuperSocket.Tests
 
                 using (var socket = CreateClient(hostConfigurator))
                 {
-                    var socketStream = await hostConfigurator.GetClientStream(socket);
-                    using (var reader = new StreamReader(socketStream, Utf8Encoding, true))
+                    using (var socketStream = await hostConfigurator.GetClientStream(socket))
+                    using (var reader = hostConfigurator.GetStreamReader(socketStream, Utf8Encoding))
                     {
                         var line = Guid.NewGuid().ToString();
 
@@ -175,8 +176,8 @@ namespace SuperSocket.Tests
                 {
                     using (var socket = CreateClient(hostConfigurator))
                     {
-                        var socketStream = await hostConfigurator.GetClientStream(socket);
-                        using (var reader = new StreamReader(socketStream, Utf8Encoding, true))
+                        using (var socketStream = await hostConfigurator.GetClientStream(socket))
+                        using (var reader = hostConfigurator.GetStreamReader(socketStream, Utf8Encoding))
                         {
                             var line = Guid.NewGuid().ToString();
                             WriteHalfPackage(socketStream, line);
@@ -199,9 +200,8 @@ namespace SuperSocket.Tests
 
                 using (var socket = CreateClient(hostConfigurator))
                 {
-                    var socketStream = await hostConfigurator.GetClientStream(socket);
-
-                    using (var reader = new StreamReader(socketStream, Utf8Encoding, true))
+                    using (var socketStream = await hostConfigurator.GetClientStream(socket))
+                    using (var reader = hostConfigurator.GetStreamReader(socketStream, Utf8Encoding))
                     {
                         var line = Guid.NewGuid().ToString();
 
@@ -226,9 +226,8 @@ namespace SuperSocket.Tests
 
                 using (var socket = CreateClient(hostConfigurator))
                 {
-                    var socketStream = await hostConfigurator.GetClientStream(socket);
-
-                    using (var reader = new StreamReader(socketStream, Utf8Encoding, true))
+                    using (var socketStream = await hostConfigurator.GetClientStream(socket))
+                    using (var reader = hostConfigurator.GetStreamReader(socketStream, Utf8Encoding))
                     {
                         int size = 100;
 
@@ -240,9 +239,11 @@ namespace SuperSocket.Tests
 
                             lines[i] = line;                            
                             WritePackage(socketStream, line);
+                            await hostConfigurator.KeepSequence();
                         }
 
                         socketStream.Flush();
+                        await hostConfigurator.KeepSequence();
 
                         for (var i = 0; i < size; i++)
                         {
@@ -255,8 +256,16 @@ namespace SuperSocket.Tests
                 await server.StopAsync();
             }
         }
+
+        public override Task TestBreakRequest(Type hostConfiguratorType)
+        {
+            return Task.CompletedTask;
+        }
         
-        public override async Task TestBreakRequest(Type hostConfiguratorType)
+        [Theory]
+        [InlineData(typeof(RegularHostConfigurator))]
+        [InlineData(typeof(SecureHostConfigurator))]
+        public async Task TestBreakRequest2(Type hostConfiguratorType)
         {
             var hostConfigurator = CreateObject<IHostConfigurator>(hostConfiguratorType);
 
@@ -266,9 +275,8 @@ namespace SuperSocket.Tests
 
                 using (var socket = CreateClient(hostConfigurator))
                 {
-                    var socketStream = await hostConfigurator.GetClientStream(socket);
-
-                    using (var reader = new StreamReader(socketStream, Utf8Encoding, true))
+                    using (var socketStream = await hostConfigurator.GetClientStream(socket))
+                    using (var reader = hostConfigurator.GetStreamReader(socketStream, Utf8Encoding))
                     using (var writer = new ConsoleWriter(socketStream, Utf8Encoding, 1024 * 8))
                     {
                         int size = 1000;
@@ -281,7 +289,7 @@ namespace SuperSocket.Tests
                             lines[i] = line;
                         }
 
-                        WriteMultiplePackages(socketStream, lines);
+                        WriteMultiplePackages(hostConfigurator, socketStream, lines);
 
                         for (var i = 0; i < size; i++)
                         {
